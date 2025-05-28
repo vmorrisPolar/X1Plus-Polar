@@ -80,4 +80,9 @@ function awaken() {
     _migrate("cfw_print_image", "homescreen.image.printing");
     _migrate("cfw_rootpw", "ssh.root_password");
     _migrate("cfw_sshd", "ssh.enabled");
+    
+    // Migrate any existing polar cloud settings
+    _migrate("polar_cloud_username", "polar.username"); 
+    _migrate("polar_cloud_pin", "polar.pin");
+    _migrate("polar_cloud_enabled", "polar.enabled");
 }
