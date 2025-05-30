@@ -62,6 +62,8 @@ char qt_resourceFeatureZlib = 0;
 
 int needs_emulation_workarounds = 0;
 
+extern "C" int _Z17get_resource_path19bbl_resource_type_tRNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEE(int id, std::string &s);
+
 #if 0
 void mocdump() {
     for (int tp = QMetaType::User; QMetaType::isRegistered(tp); tp++) {
@@ -276,6 +278,14 @@ eject:
             x1plus_vnc_set_password(NULL);
         }
 #endif
+    }
+
+    Q_INVOKABLE QString getFilamentPath() {
+        std::string s = "";
+        
+        _Z17get_resource_path19bbl_resource_type_tRNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEE(0, s);
+        
+        return QString::fromStdString(s);
     }
 
     /*** Tricks to override the backlight.  See SWIZZLEs of fopen64, fclose, fileno, and write below. ***/
@@ -563,6 +573,10 @@ public:
 
 #ifdef HAS_DBUS
 
+#include "vendor/nlohmann/json.hpp"
+
+using namespace nlohmann;
+
 namespace BDbus {
     class Object;
     
@@ -724,6 +738,76 @@ SWIZZLE(void, _ZN5BDbus4NodeC2ERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESa
     }
     printf("_ZN5BDbus4NodeC2ERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEEN4DBus7BusTypeE %s %d\n", s.c_str(), BusType);
     next(self, s, BusType);
+}
+
+SWIZZLE(int, _Z17get_resource_path19bbl_resource_type_tRNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEE, int id, std::string &s)
+    static std::shared_ptr<BDbus::Proxy> proxy;
+    
+    std::string override = "";
+    
+    if (!dbusListener.nobe) {
+        printf("get_resource_path: dbusListener not ready yet?  hope we try again later, I guess");
+    } else {
+        if (!proxy) {
+            proxy = dbusListener.nobe->createProxy("x1plus.x1plusd", "/x1plus/settings");
+        }
+        BDbus::Error e;
+        std::string settings = proxy->callMethod("x1plus.settings", "GetSettings", "{}", e);
+        
+        try {
+            json j = json::parse(settings);
+            auto k = j.at("filament.ota_version").template get<std::string>();
+            auto path = "/userdata/upgrade/filament/" + k;
+            printf("get_resource_path: read filament.ota_version setting from x1plusd of %s (%s)\n", k.c_str(), path.c_str());
+            int fd;
+            fd = open(path.c_str(), O_RDONLY);
+            if (fd < 0) {
+                printf("get_resource_path: ... but it did not exist on disk\n");
+            } else {
+                close(fd);
+                override = path;
+            }
+        } catch(...) {
+        };
+        
+        try {
+            json j = json::parse(settings);
+            auto k = j.at("filament.filename").template get<std::string>();
+            printf("get_resource_path: read filament.filename setting from x1plusd of %s\n", k.c_str());
+            int fd;
+            fd = open(k.c_str(), O_RDONLY);
+            if (fd < 0) {
+                printf("get_resource_path: ... but it did not exist on disk\n");
+            } else {
+                close(fd);
+                override = k;
+            }
+        } catch(...) {
+        };
+    }
+        
+    printf("get_resource_path(%d, %s) ->\n", id, s.c_str());
+    int rv = next(id, s);
+    printf("get_resource_path: returned %d; %s\n", rv, s.c_str());
+    if (override != "" && id == 0) {
+        printf("get_resource_path: overriding with %s\n", override.c_str());
+        s = override;
+        return 0;
+    }
+    return rv;
+}
+
+// filament.zip could be filament.zip rather than filament.zip.sig here,
+// given the above override
+SWIZZLE(int, bbl_sal_verify_firmware_x2path, const char *s1, int a, const char *s2)
+    printf("bbl_sal_verify_firmware_x2path: %s %d %s\n", s1, a, s2);
+    if (!strstr(s1, ".sig")) {
+        printf("bbl_sal_verify_firmware_x2path: pretending everything is fine since this isn't signed after all.  it's totes good\n");
+        return 0;
+    }
+    int rv = next(s1, a, s2);
+    printf("bbl_sal_verify_firmware_x2path: original call returned %d\n", s1, a, s2, rv);
+    return rv;
 }
 
 #endif

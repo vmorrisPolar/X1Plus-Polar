@@ -131,14 +131,15 @@ Rectangle {
         ZLineSplitter{
             id: line2
             alignment: Qt.AlignTop
-            y: 253
+            anchors.top: typeCB.bottom
+            anchors.topMargin: 16
             padding: 24
             color: Colors.gray_600
         }
         ZText {
             id: fanTx
             anchors.top: line2.bottom
-            anchors.topMargin: 26
+            anchors.topMargin: 16
             anchors.left: accessoriesTx.left
             maxWidth: line2.width
             color: Colors.gray_400
@@ -150,7 +151,7 @@ Rectangle {
             width: 240
             height: 68
             anchors.top: line2.bottom
-            anchors.topMargin: 79
+            anchors.topMargin: 59
             anchors.left: typeCB.left
             textFont: Fonts.body_26
             listTextFont: Fonts.body_24
@@ -176,14 +177,80 @@ Rectangle {
                 originSource: "../../icon/roundHook.svg"
             }
         }
-        Image {
-            anchors.top: line2.bottom
-            anchors.topMargin: 82
+
+        ZLineSplitter{
+            id: expansionLine
+            alignment: Qt.AlignTop
+            anchors.top: fanCB.bottom
+            anchors.topMargin: 16
+            padding: 24
+            color: Colors.gray_600
+        }
+        ZText {
+            id: expansionTx
+            anchors.top: expansionLine.bottom
+            anchors.topMargin: 16
+            anchors.left: accessoriesTx.left
+            maxWidth: expansionLine.width
+            color: Colors.gray_400
+            font: Fonts.body_30
+            text: qsTr("Expansion")
+        }
+        
+        // UI for no expander detected
+        Text {
+            id: expansionLabelNoHardware
+            visible: X1Plus.Expansion.hardware() == null
+            anchors.top: expansionLine.bottom
+            anchors.topMargin: 59
+            anchors.left: accessoriesTx.left
             anchors.right: parent.right
             anchors.rightMargin: 32
-            fillMode: Image.Pad
-            cache: false
-            source: "../../icon/auxPartCoolFan_"+ fanCB.currentIndex +".svg"
+            color: Colors.gray_100
+            font: Fonts.body_24
+            wrapMode: Text.Wrap
+            text: qsTr("No compatible expansion hardware detected.")
+        }
+        
+        // UI for yes expander detected
+        Image {
+            id: expansionLabelHappyImage
+            visible: X1Plus.Expansion.hardware() != null
+            anchors.top: expansionLine.bottom
+            anchors.topMargin: 59
+            anchors.left: accessoriesTx.left
+            anchors.leftMargin: !X1Plus.Expansion.hardware().is_authentic ? 0 : -9
+            width: 57
+            height: 57
+            source: !X1Plus.Expansion.hardware().is_authentic ? "../../icon/warning_yellow.png"
+                                                              : "../../icon/components/cfw.png"
+        }
+
+        Text {
+            id: expansionLabelHardwareFound
+            visible: X1Plus.Expansion.hardware() != null
+            anchors.top: expansionLabelHappyImage.top
+            anchors.left: expansionLabelHappyImage.right
+            anchors.leftMargin: !X1Plus.Expansion.hardware().is_authentic ? 9 : 0
+            anchors.right: parent.right
+            anchors.rightMargin: 32
+            color: Colors.gray_100
+            font: Fonts.body_24
+            wrapMode: Text.Wrap
+            text: !X1Plus.Expansion.hardware().is_authentic ? "Unknown or malfunctioning expansion hardware detected"
+                                                            : qsTr("%1\nSerial: %2").arg(X1Plus.Expansion.productName()).arg(X1Plus.Expansion.hardware().expansion_serial)
+        }
+        
+        ZButton {
+            text: qsTr("Configure...")
+            visible: X1Plus.Expansion.hardware() != null
+            anchors.top: expansionLabelHappyImage.bottom
+            anchors.topMargin: 10
+            anchors.left: accessoriesTx.left
+            textSize: 24
+            onClicked: {
+                pageStack.push("Expansion.qml")
+            }
         }
     }
     
