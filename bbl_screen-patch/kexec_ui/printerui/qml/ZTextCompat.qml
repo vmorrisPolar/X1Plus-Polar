@@ -3,27 +3,25 @@ import QtQuick.Controls 2.5
 import UIBase 1.0
 
 Text {
-
     property real maxWidth: 0
 
     font: Fonts.body_24
 
-    Component.onCompleted: {
-        if (maxWidth > 0) {
-            width = Math.min(implicitWidth, maxWidth)
-            fontSizeMode = Text.HorizontalFit
-        }
-    }
     onMaxWidthChanged: {
-        if(maxWidth > 0) {
+        if (maxWidth > 0 && fontSizeMode !== Text.HorizontalFit) {
             width = Math.min(implicitWidth, maxWidth)
-            fontSizeMode = Text.HorizontalFit
+            if (width < implicitWidth) {
+                fontSizeMode = Text.HorizontalFit
+            }
         }
     }
 
-    onTextChanged: {
-        if (maxWidth > 0) {
+    onImplicitWidthChanged: {
+        if (maxWidth > 0 && fontSizeMode !== Text.HorizontalFit) {
             width = Math.min(implicitWidth, maxWidth)
+            if (width < implicitWidth) {
+                fontSizeMode = Text.HorizontalFit
+            }
         }
     }
 }

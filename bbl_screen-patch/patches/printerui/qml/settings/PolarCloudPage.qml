@@ -11,6 +11,8 @@ Item {
     property string username: X1Plus.Settings.get("polar.username", "")
     property string pin: X1Plus.Settings.get("polar.pin", "")
     property bool cloudEnabled: X1Plus.Settings.get("polar.enabled", false)
+    property string connectionState: X1Plus.Settings.get("polar.connect_state", "DISCONNECTED")
+    property string errorMessage: X1Plus.Settings.get("polar.error", "")
 
     ColumnLayout {
         anchors.centerIn: parent
@@ -22,6 +24,41 @@ Item {
             color: Colors.brand
             horizontalAlignment: Text.AlignHCenter
             Layout.alignment: Qt.AlignHCenter
+        }
+
+        // Status indicator
+        RowLayout {
+            Layout.alignment: Qt.AlignHCenter
+            spacing: 10
+            
+            Rectangle {
+                width: 16
+                height: 16
+                radius: width/2
+                color: {
+                    switch(connectionState) {
+                        case "ESTABLISHED": return "#20ce62" // Green
+                        case "CONNECTING":
+                        case "WAITING_HELLO": return "#ffd700" // Yellow
+                        default: return "#ff4444" // Red
+                    }
+                }
+            }
+
+            Text {
+                text: {
+                    if (!cloudEnabled) return qsTr("Disabled")
+                    switch(connectionState) {
+                        case "ESTABLISHED": return qsTr("Connected")
+                        case "CONNECTING": return qsTr("Connecting...")
+                        case "WAITING_HELLO": return qsTr("Authenticating...")
+                        default:
+                            return errorMessage ? qsTr("Error: ") + errorMessage : qsTr("Disconnected")
+                    }
+                }
+                font: Fonts.body_28
+                color: Colors.gray_200
+            }
         }
 
         TextField {

@@ -220,8 +220,14 @@ class PolarPrintService(X1PlusDBusService):
     def _update_state(self, st):
         if st != self.connect_state:
             logger.debug(f"transitioning from {self.connect_state} to {st}")
-        self.connect_state = st
-        self.connect_state_ts = time.time()
+            self.connect_state = st
+            self.connect_state_ts = time.time()
+            # Update settings to notify UI of state change
+            self.daemon.settings.put("polar.connect_state", st.name)
+            if st == _ConnectState.DISCONNECTED:
+                self.daemon.settings.put("polar.error", "Connection lost")
+            elif st == _ConnectState.ESTABLISHED:
+                self.daemon.settings.put("polar.error", "")
     
     async def _force_reconnect(self):
         try:
@@ -235,6 +241,8 @@ class PolarPrintService(X1PlusDBusService):
         self._update_state(_ConnectState.WAITING_HELLO)
     
     async def _on_connect_error(self, *args, **kwargs) -> None:
+        logger.error("Failed to connect to Polar Cloud")
+        await self.daemon.settings.put("polar.error", "Failed to connect to server")
         self._update_state(_ConnectState.DISCONNECTED)
 
     async def _on_disconnect(self, *args, **kwargs) -> None:
@@ -324,18 +332,19 @@ class PolarPrintService(X1PlusDBusService):
         """
         if response["status"] == "SUCCESS":
             logger.info("Polar _on_hello_response success")
-            logger.info("Polar Cloud connected.")
             self._update_state(_ConnectState.ESTABLISHED)
             await self._get_url("idle")
-            await self._get_url("printing") # can result in "failed wrong serial number"; that's fine, if nothing is printing
-        elif response["message"] != "Printer has been deleted":
-            logger.error(f"_on_hello_response failure: {response['message']}")
-            # TODO: send any errors to interface.
-        if self.status_task:
-            logger.error("leftover status_task?? somebody did not clean up, but I'm killing it anyway")
-            self.status_task.cancel()
-            self.status_task = None
-        self.status_task = asyncio.create_task(self._status())
+            await self._get_url("printing")
+        else:
+            error_msg = ""
+            if response["message"] == "Printer has been deleted":
+                error_msg = "Printer was removed from Polar Cloud"
+            else:
+                error_msg = f"Connection failed: {response['message']}"
+            
+            logger.error(f"Hello response failure: {error_msg}")
+            await self.daemon.settings.put("polar.error", error_msg)
+            self._update_state(_ConnectState.DISCONNECTED)
 
     async def _on_keypair_response(self, response, *args, **kwargs) -> None:
         """
@@ -354,33 +363,26 @@ class PolarPrintService(X1PlusDBusService):
             # TODO: deal with error using interface.
 
     async def _on_register_response(self, response, *args, **kwargs) -> None:
-        """
-        Get register response from status server and save serial number.
-        When this fn completes, printer will be ready to receive print calls.
-        """
+        """Get register response from status server and save serial number."""
+        logger.info(f"Polar _on_register_response {response}")
         if response["status"] == "SUCCESS":
-            logger.info("Polar _on_register_response success.")
-            logger.debug(f"Polar serial number: {response['serialNumber']}")
             await self.daemon.settings.put("polar.sn", response["serialNumber"])
-            logger.info("Polar Cloud connected.")
-
+            await self.daemon.settings.put("polar.error", "")
+            self._update_state(_ConnectState.ESTABLISHED)
         else:
-            logger.error(f"_on_register_response failure: {response['reason']}")
-            # TODO: deal with various failure modes here. Most can be dealt
-            # with in interface. First three report as server erros? Modes are
-            # "SERVER_ERROR": Report this?
-            # "MFG_UNKNOWN": Again, should be impossible.
-            # "INVALID_KEY": Ask for new key. Maybe have a counter and fail after two?
-            # "MFG_MISSING": This should be impossible.
-            # "EMAIL_PIN_ERROR": Send it to the interface.
-            # "FORBIDDEN": There's an issue with the MAC address.
-            if response["reason"].lower() == "forbidden":
-                # TODO: Must communicate with screen to debug this!
-                logger.error(
-                    f"Forbidden. Duplicate MAC problem!\nTerminating MAC: "
-                    f"{self.mac}\n\n"
-                )
-                return
+            error_msg = ""
+            if response["reason"] == "INVALID_KEY":
+                error_msg = "Invalid key, please try reconnecting"
+            elif response["reason"] == "EMAIL_PIN_ERROR":
+                error_msg = "Invalid email or PIN"
+            elif response["reason"].lower() == "forbidden":
+                error_msg = "Device already registered"
+            else:
+                error_msg = f"Registration failed: {response['reason']}"
+            
+            logger.error(f"Registration failed: {error_msg}")
+            await self.daemon.settings.put("polar.error", error_msg)
+            self._update_state(_ConnectState.DISCONNECTED)
 
     async def _register(self) -> None:
         """
