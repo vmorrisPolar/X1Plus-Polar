@@ -9,6 +9,7 @@ module:
 
 import asyncio
 import logging
+import os
 import socketio
 from Crypto.PublicKey import RSA
 from Crypto.Cipher import PKCS1_OAEP
@@ -23,23 +24,23 @@ logger = logging.getLogger(__name__)
 class PolarPrintService:
     def __init__(self, daemon):
         self.daemon = daemon
-        self.polar_sn = 0
+        self.polar_sn = self.daemon.settings.get("polar.serial_number", "")
         # Todo: VERY IMPORTANT!! The public and private keys MUST be moved to
         # non-volatile memory before release.
-        self.public_key = ""
-        self.private_key = ""
+        self.public_key = self.daemon.settings.get("polar.public_key", "")
+        self.private_key = self.daemon.settings.get("polar.private_key", "")
         self.connected = False
+        self.connection_status = "Not connected"
         self.mac = ""
         self.pin = ""
         self.username = ""
         self.server_url = "https://printer2.polar3d.com"
         self.socket = None
         # self.ip = ""
-        # Todo: Fix two "on" fn calls below. Also, start communicating with dbus.
-        # self.daemon.settings.on("polarprint.enabled", self.sync_startstop())
-        # self.daemon.settings.on("self.pin", self.set_pin())
-        self.socket = None
-        self.connected = False  # We might not need this, but here for now.
+        # Watch for settings changes
+        self.daemon.settings.on("polar.enabled", self._on_enabled_changed)
+        self.daemon.settings.on("polar.username", self._on_creds_changed)
+        self.daemon.settings.on("polar.pin", self._on_creds_changed)
 
 
     async def begin(self):
@@ -133,6 +134,9 @@ class PolarPrintService:
         if response["status"] == "SUCCESS":
             self.public_key = response["public"]
             self.private_key = response["private"]
+            # Save keys to settings
+            self.daemon.settings.put("polar.public_key", self.public_key)
+            self.daemon.settings.put("polar.private_key", self.private_key)
             # We have keys, but still need to register. First disconnect.
             logger.info("_on_keypair_response success. Disconnecting.")
             # Todo: I'm not creating a race condition with the next three fn calls, am I?
@@ -142,9 +146,11 @@ class PolarPrintService:
             await self.socket.connect(self.server_url, transports=["websocket"])
         else:
             # We have an error.
-            logger.error(f"_on_keypair_response failure: {response['message']}")
-            # Todo: communicate with dbus to fix this!
-            # Todo: deal with error using interface.
+            error_msg = response.get('message', 'Key pair request failed')
+            logger.error(f"_on_keypair_response failure: {error_msg}")
+            self.connection_status = f"Key Error: {error_msg}"
+            self.daemon.settings.put("polar.last_error", error_msg)
+            self._update_status()
 
     async def _on_register_response(self, response, *args, **kwargs):
         """Get register response from status server and save serial number."""
@@ -152,9 +158,21 @@ class PolarPrintService:
             logger.info("_on_register_response success.")
             logger.debug(f"Serial number: {response['serialNumber']}")
             self.polar_sn = response["serialNumber"]
+            self.daemon.settings.put("polar.serial_number", self.polar_sn)
+            self.connection_status = "Connected"
+            self.connected = True
+            # Clear any previous errors
+            self.daemon.settings.put("polar.last_error", "")
+            self._update_status()
+            logger.info(f"Successfully registered with Polar Cloud. Serial: {self.polar_sn}")
 
         else:
-            logger.error(f"_on_register_response failure: {response['reason']}")
+            # We have an error.
+            error_msg = response.get('reason', 'Registration failed')
+            logger.error(f"_on_register_response failure: {error_msg}")
+            self.connection_status = f"Registration Error: {error_msg}"
+            self.daemon.settings.put("polar.last_error", error_msg)
+            self._update_status()
             # Todo: deal with various failure modes here. Most can be dealt
             # with in interface. First three report as server erros? Modes are
             # "SERVER_ERROR": Report this?
@@ -265,36 +283,71 @@ class PolarPrintService:
 
     async def get_creds(self) -> None:
         """
-        If PIN and username are not set, open Polar Cloud interface window and
-        get them.
-
-        Todo: This works only during emulation.
+        Get credentials from settings or from env file.
+        Priority:
+        1. X1Plus settings (from UI)
+        2. /mnt/sdcard/x1plus/env file
         """
+        # First try to get from settings
+        self.username = self.daemon.settings.get("polar.username", "")
+        self.pin = self.daemon.settings.get("polar.pin", "")
+        
+        # If not in settings, try env file
+        if not self.username or not self.pin:
+            try:
+                env_path = "/mnt/sdcard/x1plus/env"
+                if os.path.exists(env_path):
+                    with open(env_path) as env:
+                        for line in env:
+                            if '=' in line:
+                                k, v = line.strip().split('=', 1)
+                                if k == 'username' and not self.username:
+                                    self.username = v
+                                    self.daemon.settings.put("polar.username", v)
+                                elif k == 'pin' and not self.pin:
+                                    self.pin = v
+                                    self.daemon.settings.put("polar.pin", v)
+                    logger.info(f"Loaded credentials from {env_path}")
+            except Exception as e:
+                logger.error(f"Failed to read env file: {e}")
+        
         if is_emulating():
-            # I need to use actual account creds to connect, so we're using .env
-            # for testing, until there's an interface.
-            # dotenv isn't installed, so just open the .env file and parse it.
-            # This means that .env file must formatted correctly, with var names
-            # `username` and `pin`.
-            from pathlib import Path
-
-            env_dir = Path(__file__).resolve()
-            with open(env_dir.parents[0] / ".env") as env:
-                for line in env:
-                    k, v = line.split("=")
-                    setattr(self, k, v.strip())
-        else:
-            if not self.pin:
-                # Get it from the interface.
-                pass
-            if not self.daemon.settings.get("polar.username", ""):
-                # Get it from the interface.
+            # For emulation, also check local .env file
+            try:
+                from pathlib import Path
+                env_dir = Path(__file__).resolve()
+                with open(env_dir.parents[0] / ".env") as env:
+                    for line in env:
+                        if '=' in line:
+                            k, v = line.strip().split('=', 1)
+                            setattr(self, k, v)
+            except:
                 pass
 
     def set_interface(self):
         """Get IP and MAC addresses and store them in self.settings."""
         self.mac = get_MAC()
         # self.ip = get_IP()
+    
+    def _update_status(self):
+        """Update settings with current connection status."""
+        self.daemon.settings.put("polar.connection_status", self.connection_status)
+        self.daemon.settings.put("polar.connected", self.connected)
+    
+    def _on_enabled_changed(self, enabled):
+        """Handle when polar.enabled setting changes."""
+        if enabled and not self.connected:
+            asyncio.create_task(self.begin())
+        elif not enabled and self.connected:
+            if self.socket:
+                asyncio.create_task(self.socket.disconnect())
+    
+    def _on_creds_changed(self, value):
+        """Handle when credentials change."""
+        # If we're connected, restart with new creds
+        if self.connected:
+            asyncio.create_task(self.socket.disconnect())
+            asyncio.create_task(self.begin())
 
 _daemon = None
 def load(daemon):
